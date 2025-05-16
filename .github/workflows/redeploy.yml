@@ -53,7 +53,7 @@ jobs:
           START_TIME=${{ steps.start.outputs.start_time }}
           DURATION=$((END_TIME - START_TIME))
 
-          MESSAGE=$(printf "%s *CB-Auto Deployment Status*\n\n⏱ *Time:* %s UTC\n⏳ *Duration:* %ds\n🚦 *Status:* %s" \
+          MESSAGE=$(printf "%s *CB-AutoShare Deployment Status*\n\n⏱ *Time:* %s UTC\n⏳ *Duration:* %ds\n🚦 *Status:* %s" \
             "$EMOJI" "$TIMESTAMP" "$DURATION" "$STATUS")
 
           curl -s -X POST \
