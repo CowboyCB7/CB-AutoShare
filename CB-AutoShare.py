@@ -300,7 +300,7 @@ async def scanin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ A scan is already in progress. Use /cancel to stop it.")
         return
 
-        async def scan_task():
+    async def scan_task():
         try:
             await context.bot.send_message(chat_id, "⏳ Starting scan process...")
             success = await perform_scan_in(context.bot, chat_id, creds["username"], creds["password"])
