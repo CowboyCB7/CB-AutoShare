@@ -120,6 +120,20 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_login_state[user_id] = "awaiting_username"
     await update.message.reply_text("👤 Please enter your USERNAME:")
 
+async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+
+    # Only allow logout for authorized users
+    if user_id not in AUTHORIZED_USERS:
+        await update.message.reply_text("❌ You are not authorized to use this bot.")
+        return
+
+    # Remove credentials and login state
+    user_credentials.pop(user_id, None)
+    user_login_state.pop(user_id, None)
+
+    await update.message.reply_text("🚪 You have been logged out. Use /login to log in again.")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     message = update.message.text.strip()
@@ -327,6 +341,7 @@ def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("login", login))
+    application.add_handler(CommandHandler("logout", logout))
     application.add_handler(CommandHandler("scanin", scanin))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
@@ -335,7 +350,8 @@ def main():
             BotCommand("start", "Show welcome message"),
             BotCommand("login", "Start login process"),
             BotCommand("scanin", "Initiate attendance scan"),
-            BotCommand("cancel", "Cancel an ongoing scan-in")
+            BotCommand("cancel", "Cancel an ongoing scan-in"),
+            BotCommand("logout", "Log out and remove your credentials")
         ])
     application.post_init = post_init
     application.run_polling()
