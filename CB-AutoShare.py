@@ -49,7 +49,8 @@ BASE_LONGITUDE = float(os.getenv('BASE_LONGITUDE', '104.911449'))
 MAX_DEVIATION_METERS = 150
 
 AUTHORIZED_USERS = {
-    "600246489":"347427087":{},  # Add more if needed, e.g., "88888": {}
+    "600246489": {},
+    "347427087": {},  # Add more if needed, e.g., "88888": {}
 }
 
 user_scan_tasks = {}
