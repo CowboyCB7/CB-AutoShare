@@ -50,7 +50,10 @@ MAX_DEVIATION_METERS = 150
 
 AUTHORIZED_USERS = {
     "600246489": {},
-    "347427087": {},  # Add more if needed, e.g., "88888": {}
+    "347427087": {},
+    "522188040": {},  # Newly added
+    "6316264035": {},  # Newly added
+    # Add more if needed
 }
 
 user_scan_tasks = {}
