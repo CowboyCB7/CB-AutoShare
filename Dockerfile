@@ -1,11 +1,18 @@
 FROM python:3.9-slim
 
-# Install system dependencies
+# Install system dependencies for Chromium
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    xvfb \
-    libgl1 \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libgdk-pixbuf2.0-0 \
+    libnspr4 \
     libnss3 \
     libx11-xcb1 \
     libxcb1 \
@@ -19,15 +26,27 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
+    libgl1 \
     libgeoclue-2-0 \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+    wget \
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
-# Explicit port declaration
+# Set environment variables so Selenium knows where Chromium is
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_BIN=/usr/bin/chromedriver
+
+# Expose port for webhook
 EXPOSE 8000
 
+# Set working directory
 WORKDIR /app
+
+# Copy files
 COPY . .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Default command
 CMD ["python", "CB-AutoShare.py"]
