@@ -20,6 +20,7 @@ from telegram import BotCommand
 from math import radians, sin, cos, sqrt, atan2
 from asyncio import Task
 import asyncio
+from aiohttp import web
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """
@@ -339,42 +340,53 @@ async def scanin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task = asyncio.create_task(scan_task())
     user_scan_tasks[user_id] = task
-    
-def main():
-    """Start the bot"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("login", login))
-    application.add_handler(CommandHandler("logout", logout))
-    application.add_handler(CommandHandler("scanin", scanin))
-    application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    async def post_init(application):
-        await application.bot.set_my_commands([
-            BotCommand("start", "Show welcome message"),
-            BotCommand("login", "Start login process"),
-            BotCommand("scanin", "Initiate attendance scan"),
-            BotCommand("cancel", "Cancel an ongoing scan-in"),
-            BotCommand("logout", "Log out and remove your credentials")
-        ])
-    application.post_init = post_init
-    application.run_polling()
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/healthz':
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
-            self.end_headers()
 
-def run_health_server():
-    server = HTTPServer(('0.0.0.0', 8000), HealthHandler)
-    print("Health check server running on port 8000")
-    server.serve_forever()
+async def post_init(application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Show welcome message"),
+        BotCommand("login", "Start login process"),
+        BotCommand("scanin", "Initiate attendance scan"),
+        BotCommand("cancel", "Cancel an ongoing scan-in"),
+        BotCommand("logout", "Log out and remove your credentials")
+    ])
+
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("login", login))
+application.add_handler(CommandHandler("logout", logout))
+application.add_handler(CommandHandler("scanin", scanin))
+application.add_handler(CommandHandler("cancel", cancel))
+application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+application.post_init = post_init
+
+# Health check route
+async def handle_health_check(request):
+    return web.Response(text="OK")
+
+# Telegram webhook route
+async def handle_telegram_webhook(request):
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return web.Response(text="OK")
+
+async def main():
+    await application.initialize()
+
+    app = web.Application()
+    app.router.add_get("/healthz", handle_health_check)
+    app.router.add_post("/", handle_telegram_webhook)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8000)))
+    await site.start()
+
+    await application.bot.set_webhook(os.getenv("WEBHOOK_URL"))
+    print("✅ Webhook set")
+
+    # Prevent the app from exiting
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-    main()
+    asyncio.run(main())
