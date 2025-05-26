@@ -369,12 +369,16 @@ async def handle_telegram_webhook(request):
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
     return web.Response(text="OK")
-
+    
+async def handle_root(request):
+    return web.Response(text="Bot is running")
+    
 async def main():
     await application.initialize()
     
     # Create web application
     app = web.Application()
+    app.router.add_get("/", handle_root)  # Add this line
     app.router.add_get("/healthz", handle_health_check)
     app.router.add_post("/webhook", handle_telegram_webhook)  # Changed endpoint
     
