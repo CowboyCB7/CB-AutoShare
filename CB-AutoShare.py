@@ -296,7 +296,7 @@ async def perform_scan_in(bot, chat_id, username, password):
         driver.quit()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send welcome message"""
+    logger.info(f"Received start command from {update.effective_user.id}")
     await update.message.reply_text(
         "🚀 Attendance Bot Ready!\n"
         "Use /scanin to trigger the automation process"
@@ -372,20 +372,42 @@ async def handle_telegram_webhook(request):
 
 async def main():
     await application.initialize()
-
+    
+    # Create web application
     app = web.Application()
     app.router.add_get("/healthz", handle_health_check)
-    app.router.add_post("/", handle_telegram_webhook)
-
+    app.router.add_post("/webhook", handle_telegram_webhook)  # Changed endpoint
+    
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8000)))
+    
+    # Get port from environment (Render provides this)
+    port = int(os.getenv("PORT", 8000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
-    await application.bot.set_webhook(os.getenv("WEBHOOK_URL"))
-    print("✅ Webhook set")
-
-    # Prevent the app from exiting
+    
+    # Set webhook with proper URL
+    webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        raise ValueError("WEBHOOK_URL environment variable not set")
+    
+    # Verify webhook setup
+    await application.bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
+    
+    # Verify webhook was set
+    webhook_info = await application.bot.get_webhook_info()
+    logger.info(f"Webhook Info: {webhook_info}")
+    
+    if webhook_info.url != webhook_url:
+        logger.error(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
+    else:
+        logger.info("✅ Webhook successfully set")
+    
+    # Keep application running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
