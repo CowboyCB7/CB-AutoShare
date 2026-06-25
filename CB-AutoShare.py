@@ -54,6 +54,7 @@ AUTHORIZED_USERS = {
     "347427087": {},
     "522188040": {},  # Newly added
     "6316264035": {},  # Newly added
+    "5750960152":{},
     # Add more if needed
 }
 
