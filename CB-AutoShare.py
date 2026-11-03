@@ -392,13 +392,15 @@ async def handle_health_check(request):
 async def handle_root(request):
     return web.Response(text="Bot is running")
 
+bot_ready = False
+
 # Telegram webhook route
 async def handle_telegram_webhook(request):
     try:
-        if not application.running:
-            logger.warning("Bot is still connecting to Telegram API; update will not be processed yet.")
-            return web.Response(text="Bot initializing", status=503)
         data = await request.json()
+        if not bot_ready:
+            logger.warning("Bot is still initializing, update will be processed once ready.")
+            return web.Response(text="Bot initializing", status=503)
         update = Update.de_json(data, application.bot)
         if update:
             await application.process_update(update)
@@ -408,14 +410,14 @@ async def handle_telegram_webhook(request):
         return web.Response(status=500, text="Internal Server Error")
 
 async def init_telegram_bot(webhook_url: str):
-    """Continuously retries bot initialization in background until Telegram API recovers."""
+    """Continuously retries bot initialization in background until Telegram API connects."""
+    global bot_ready
     attempt = 1
     while True:
         try:
             logger.info(f"Connecting to Telegram API (attempt {attempt})...")
-            if not application.initialized:
+            if not bot_ready:
                 await application.initialize()
-            if not application.running:
                 await application.start()
             
             logger.info("✅ Telegram bot initialized and started.")
@@ -433,6 +435,7 @@ async def init_telegram_bot(webhook_url: str):
                 logger.warning(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
             else:
                 logger.info("✅ Telegram Webhook successfully active and ready!")
+            bot_ready = True
             return
         except Exception as e:
             logger.warning(f"⚠️ Telegram API connection attempt {attempt} failed ({e}). Retrying in 10s...")
@@ -463,7 +466,7 @@ async def main():
     if not webhook_url.endswith("/webhook") and not webhook_url.endswith("/"):
         webhook_url = f"{webhook_url}/webhook"
 
-    # 3. Launch bot initialization in background (prevents Render crash if Telegram has temporary 502)
+    # 3. Launch bot initialization in background (prevents Render crash if Telegram has temporary network issue)
     init_task = asyncio.create_task(init_telegram_bot(webhook_url))
     
     # 4. Keep application running
@@ -473,9 +476,8 @@ async def main():
         init_task.cancel()
         logger.info("Shutting down bot and web server...")
         try:
-            if application.running:
+            if bot_ready:
                 await application.stop()
-            if application.initialized:
                 await application.shutdown()
         except Exception as e:
             logger.warning(f"Error during bot shutdown: {e}")
