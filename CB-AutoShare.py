@@ -374,7 +374,6 @@ application = (
     .read_timeout(30.0)
     .write_timeout(30.0)
     .pool_timeout(30.0)
-    .media_write_timeout(60.0)
     .build()
 )
 application.add_handler(CommandHandler("start", start))
