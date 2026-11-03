@@ -20,7 +20,7 @@ from telegram import BotCommand
 from math import radians, sin, cos, sqrt, atan2
 from asyncio import Task
 import asyncio
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """
@@ -394,20 +394,34 @@ async def handle_root(request):
 
 bot_ready = False
 
-# Telegram webhook route
+# Telegram webhook route: Returns 200 immediately and pushes to PTB update_queue
 async def handle_telegram_webhook(request):
     try:
         data = await request.json()
-        if not bot_ready:
-            logger.warning("Bot is still initializing, update will be processed once ready.")
-            return web.Response(text="Bot initializing", status=503)
         update = Update.de_json(data, application.bot)
-        if update:
-            await application.process_update(update)
-        return web.Response(text="OK")
+        if update and bot_ready:
+            await application.update_queue.put(update)
+        elif update:
+            # If bot_ready is still finalizing, process concurrently so Telegram returns 200 immediately
+            asyncio.create_task(application.process_update(update))
+        return web.Response(text="OK", status=200)
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}", exc_info=True)
-        return web.Response(status=500, text="Internal Server Error")
+        return web.Response(status=200, text="OK")
+
+async def keep_alive_task():
+    """Pings own external healthz endpoint every 10 minutes to prevent Render free tier from sleeping."""
+    await asyncio.sleep(60)
+    service_url = os.getenv("RENDER_EXTERNAL_URL") or "https://cb-autoshare.onrender.com"
+    health_url = f"{service_url.rstrip('/')}/healthz"
+    while True:
+        try:
+            async with ClientSession() as session:
+                async with session.get(health_url, timeout=15) as resp:
+                    logger.info(f"Keep-alive ping to {health_url}: status {resp.status}")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping error: {e}")
+        await asyncio.sleep(600)  # Every 10 minutes (Render spins down after 15 min)
 
 async def init_telegram_bot(webhook_url: str):
     """Continuously retries bot initialization in background until Telegram API connects."""
@@ -466,14 +480,16 @@ async def main():
     if not webhook_url.endswith("/webhook") and not webhook_url.endswith("/"):
         webhook_url = f"{webhook_url}/webhook"
 
-    # 3. Launch bot initialization in background (prevents Render crash if Telegram has temporary network issue)
+    # 3. Launch bot initialization and keep-alive tasks
     init_task = asyncio.create_task(init_telegram_bot(webhook_url))
+    keep_alive = asyncio.create_task(keep_alive_task())
     
     # 4. Keep application running
     try:
         await asyncio.Event().wait()
     finally:
         init_task.cancel()
+        keep_alive.cancel()
         logger.info("Shutting down bot and web server...")
         try:
             if bot_ready:
