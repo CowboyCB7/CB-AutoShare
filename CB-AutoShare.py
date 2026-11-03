@@ -394,15 +394,12 @@ async def handle_root(request):
 
 bot_ready = False
 
-# Telegram webhook route: Returns 200 immediately and pushes to PTB update_queue
+# Telegram webhook route: Returns 200 immediately to Telegram and processes update asynchronously
 async def handle_telegram_webhook(request):
     try:
         data = await request.json()
         update = Update.de_json(data, application.bot)
-        if update and bot_ready:
-            await application.update_queue.put(update)
-        elif update:
-            # If bot_ready is still finalizing, process concurrently so Telegram returns 200 immediately
+        if update:
             asyncio.create_task(application.process_update(update))
         return web.Response(text="OK", status=200)
     except Exception as e:
