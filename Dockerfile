@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 # Set environment variables so Selenium knows where Chromium is
+ENV PYTHONUNBUFFERED=1
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_BIN=/usr/bin/chromedriver
 
@@ -42,11 +43,14 @@ EXPOSE 8000
 # Set working directory
 WORKDIR /app
 
-# Copy files
-COPY . .
+# Copy requirements first for better layer caching
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy remaining files
+COPY . .
 
 # Default command
 CMD ["python", "CB-AutoShare.py"]

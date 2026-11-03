@@ -41,9 +41,12 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
     return round(R * c * 1000, 1)  # Convert to meters and round
   
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Configuration
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-AUTHORIZED_USERS = [uid.strip() for uid in os.getenv('AUTHORIZED_USERS', '').split(',') if uid.strip()]
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '').strip()
 TIMEZONE = pytz.timezone('Asia/Bangkok')
 BASE_LATITUDE = float(os.getenv('BASE_LATITUDE', '11.545380'))
 BASE_LONGITUDE = float(os.getenv('BASE_LONGITUDE', '104.911449'))
@@ -54,9 +57,14 @@ AUTHORIZED_USERS = {
     "347427087": {},
     "522188040": {},  # Newly added
     "6316264035": {},  # Newly added
-    "5750960152":{},
+    "5750960152": {},
     # Add more if needed
 }
+
+# Merge authorized users from environment variable if present
+env_users = [uid.strip() for uid in os.getenv('AUTHORIZED_USERS', '').split(',') if uid.strip()]
+for uid in env_users:
+    AUTHORIZED_USERS[uid] = {}
 
 user_scan_tasks = {}
 user_login_state = {}
@@ -88,7 +96,7 @@ def generate_random_coordinates():
 
 def create_driver():
     options = Options()
-    options.binary_location = '/usr/bin/chromium'
+    options.binary_location = os.getenv('CHROME_BIN', '/usr/bin/chromium')
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
@@ -100,7 +108,8 @@ def create_driver():
         "profile.default_content_setting_values.geolocation": 1,
     })
 
-    service = Service(executable_path='/usr/bin/chromedriver')
+    chromedriver_path = os.getenv('CHROMEDRIVER_BIN', '/usr/bin/chromedriver')
+    service = Service(executable_path=chromedriver_path)
     driver = webdriver.Chrome(service=service, options=options)
     
     # Generate random coordinates
@@ -343,15 +352,31 @@ async def scanin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_scan_tasks[user_id] = task
 
 async def post_init(application):
-    await application.bot.set_my_commands([
-        BotCommand("start", "Show welcome message"),
-        BotCommand("login", "Start login process"),
-        BotCommand("scanin", "Initiate attendance scan"),
-        BotCommand("cancel", "Cancel an ongoing scan-in"),
-        BotCommand("logout", "Log out and remove your credentials")
-    ])
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start", "Show welcome message"),
+            BotCommand("login", "Start login process"),
+            BotCommand("scanin", "Initiate attendance scan"),
+            BotCommand("cancel", "Cancel an ongoing scan-in"),
+            BotCommand("logout", "Log out and remove your credentials")
+        ])
+        logger.info("✅ Bot commands registered successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to set bot commands during post_init (non-fatal): {e}")
 
-application = Application.builder().token(TELEGRAM_TOKEN).build()
+if not TELEGRAM_TOKEN:
+    logger.error("❌ TELEGRAM_TOKEN environment variable is not set! Please configure it in Render dashboard.")
+
+application = (
+    Application.builder()
+    .token(TELEGRAM_TOKEN)
+    .connect_timeout(30.0)
+    .read_timeout(30.0)
+    .write_timeout(30.0)
+    .pool_timeout(30.0)
+    .media_write_timeout(60.0)
+    .build()
+)
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("login", login))
 application.add_handler(CommandHandler("logout", logout))
@@ -364,56 +389,96 @@ application.post_init = post_init
 async def handle_health_check(request):
     return web.Response(text="OK")
 
-# Telegram webhook route
-async def handle_telegram_webhook(request):
-    data = await request.json()
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return web.Response(text="OK")
-    
+# Root status route
 async def handle_root(request):
     return web.Response(text="Bot is running")
+
+# Telegram webhook route
+async def handle_telegram_webhook(request):
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        if update:
+            await application.process_update(update)
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        return web.Response(status=500, text="Internal Server Error")
     
 async def main():
-    await application.initialize()
-    
-    # Create web application
+    # 1. Start web server FIRST so Render detects port binding immediately
     app = web.Application()
-    app.router.add_get("/", handle_root)  # Add this line
+    app.router.add_get("/", handle_root)
     app.router.add_get("/healthz", handle_health_check)
-    app.router.add_post("/webhook", handle_telegram_webhook)  # Changed endpoint
+    app.router.add_post("/webhook", handle_telegram_webhook)
+    app.router.add_post("/", handle_telegram_webhook)
     
+    port = int(os.getenv("PORT", 8000))
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # Get port from environment (Render provides this)
-    port = int(os.getenv("PORT", 8000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logger.info(f"🚀 Web server listening on 0.0.0.0:{port}")
     
-    # Set webhook with proper URL
-    webhook_url = os.getenv("WEBHOOK_URL")
+    # 2. Initialize Telegram Application with retry logic
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Initializing Telegram bot (attempt {attempt}/{max_retries})...")
+            await application.initialize()
+            await application.start()
+            logger.info("✅ Telegram bot initialized and started successfully.")
+            break
+        except Exception as e:
+            logger.warning(f"⚠️ Bot initialization attempt {attempt}/{max_retries} failed: {e}")
+            if attempt == max_retries:
+                logger.error("❌ Max retries reached for bot initialization.")
+                raise
+            await asyncio.sleep(3 * attempt)
+            
+    # 3. Configure Telegram Webhook with retry logic
+    webhook_url = os.getenv("WEBHOOK_URL", "").strip()
     if not webhook_url:
+        logger.error("❌ WEBHOOK_URL environment variable is not set!")
         raise ValueError("WEBHOOK_URL environment variable not set")
     
-    # Verify webhook setup
-    await application.bot.set_webhook(
-        url=webhook_url,
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    # Ensure webhook URL points to /webhook if not already specified
+    if not webhook_url.endswith("/webhook") and not webhook_url.endswith("/"):
+        webhook_url = f"{webhook_url}/webhook"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Setting Telegram webhook to {webhook_url} (attempt {attempt}/{max_retries})...")
+            await application.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"Webhook Info: {webhook_info}")
+            if webhook_info.url != webhook_url:
+                logger.warning(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
+            else:
+                logger.info("✅ Webhook successfully set")
+            break
+        except Exception as e:
+            logger.warning(f"⚠️ Webhook setup attempt {attempt}/{max_retries} failed: {e}")
+            if attempt == max_retries:
+                logger.error("❌ Max retries reached for webhook setup.")
+                raise
+            await asyncio.sleep(3 * attempt)
     
-    # Verify webhook was set
-    webhook_info = await application.bot.get_webhook_info()
-    logger.info(f"Webhook Info: {webhook_info}")
-    
-    if webhook_info.url != webhook_url:
-        logger.error(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
-    else:
-        logger.info("✅ Webhook successfully set")
-    
-    # Keep application running
-    await asyncio.Event().wait()
+    # 4. Keep application running
+    try:
+        await asyncio.Event().wait()
+    finally:
+        logger.info("Shutting down bot and web server...")
+        try:
+            await application.stop()
+            await application.shutdown()
+        except Exception as e:
+            logger.warning(f"Error during bot shutdown: {e}")
+        await runner.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())
