@@ -395,6 +395,9 @@ async def handle_root(request):
 # Telegram webhook route
 async def handle_telegram_webhook(request):
     try:
+        if not application.running:
+            logger.warning("Bot is still connecting to Telegram API; update will not be processed yet.")
+            return web.Response(text="Bot initializing", status=503)
         data = await request.json()
         update = Update.de_json(data, application.bot)
         if update:
@@ -403,7 +406,39 @@ async def handle_telegram_webhook(request):
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}", exc_info=True)
         return web.Response(status=500, text="Internal Server Error")
-    
+
+async def init_telegram_bot(webhook_url: str):
+    """Continuously retries bot initialization in background until Telegram API recovers."""
+    attempt = 1
+    while True:
+        try:
+            logger.info(f"Connecting to Telegram API (attempt {attempt})...")
+            if not application.initialized:
+                await application.initialize()
+            if not application.running:
+                await application.start()
+            
+            logger.info("✅ Telegram bot initialized and started.")
+            
+            # Now set webhook
+            logger.info(f"Setting Telegram webhook to {webhook_url}...")
+            await application.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"Webhook Info: {webhook_info}")
+            if webhook_info.url != webhook_url:
+                logger.warning(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
+            else:
+                logger.info("✅ Telegram Webhook successfully active and ready!")
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ Telegram API connection attempt {attempt} failed ({e}). Retrying in 10s...")
+            attempt += 1
+            await asyncio.sleep(10)
+
 async def main():
     # 1. Start web server FIRST so Render detects port binding immediately
     app = web.Application()
@@ -419,62 +454,29 @@ async def main():
     await site.start()
     logger.info(f"🚀 Web server listening on 0.0.0.0:{port}")
     
-    # 2. Initialize Telegram Application with retry logic
-    max_retries = 5
-    for attempt in range(1, max_retries + 1):
-        try:
-            logger.info(f"Initializing Telegram bot (attempt {attempt}/{max_retries})...")
-            await application.initialize()
-            await application.start()
-            logger.info("✅ Telegram bot initialized and started successfully.")
-            break
-        except Exception as e:
-            logger.warning(f"⚠️ Bot initialization attempt {attempt}/{max_retries} failed: {e}")
-            if attempt == max_retries:
-                logger.error("❌ Max retries reached for bot initialization.")
-                raise
-            await asyncio.sleep(3 * attempt)
-            
-    # 3. Configure Telegram Webhook with retry logic
+    # 2. Prepare Webhook URL
     webhook_url = os.getenv("WEBHOOK_URL", "").strip()
     if not webhook_url:
         logger.error("❌ WEBHOOK_URL environment variable is not set!")
         raise ValueError("WEBHOOK_URL environment variable not set")
     
-    # Ensure webhook URL points to /webhook if not already specified
     if not webhook_url.endswith("/webhook") and not webhook_url.endswith("/"):
         webhook_url = f"{webhook_url}/webhook"
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            logger.info(f"Setting Telegram webhook to {webhook_url} (attempt {attempt}/{max_retries})...")
-            await application.bot.set_webhook(
-                url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-            webhook_info = await application.bot.get_webhook_info()
-            logger.info(f"Webhook Info: {webhook_info}")
-            if webhook_info.url != webhook_url:
-                logger.warning(f"Webhook URL mismatch: {webhook_info.url} != {webhook_url}")
-            else:
-                logger.info("✅ Webhook successfully set")
-            break
-        except Exception as e:
-            logger.warning(f"⚠️ Webhook setup attempt {attempt}/{max_retries} failed: {e}")
-            if attempt == max_retries:
-                logger.error("❌ Max retries reached for webhook setup.")
-                raise
-            await asyncio.sleep(3 * attempt)
+    # 3. Launch bot initialization in background (prevents Render crash if Telegram has temporary 502)
+    init_task = asyncio.create_task(init_telegram_bot(webhook_url))
     
     # 4. Keep application running
     try:
         await asyncio.Event().wait()
     finally:
+        init_task.cancel()
         logger.info("Shutting down bot and web server...")
         try:
-            await application.stop()
-            await application.shutdown()
+            if application.running:
+                await application.stop()
+            if application.initialized:
+                await application.shutdown()
         except Exception as e:
             logger.warning(f"Error during bot shutdown: {e}")
         await runner.cleanup()
